@@ -1,464 +1,149 @@
-import { useEffect, useState, useCallback } from 'react';
-import {
-  GraduationCap,
-  BookOpen,
-  Save,
-  Loader2,
-  CheckCircle2,
-  Search,
-  X,
-  Edit3,
-  Plus,
-  AlertCircle,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import type { Estudiante, Calificacion } from '@/types';
+import { calcularResultado, propuestaPolitica, puntajesVacios, validarPolitica, validarPuntajes } from '@/lib/academico';
+import { fechaParaguay } from '@/lib/asistencia';
+import { mensajeError } from '@/lib/errores';
+import type { Calificacion, Estudiante, Materia, PoliticaAcademica, Puntajes } from '@/types';
 
-const MATERIAS = [
-  'Matematica',
-  'Lengua Espanola',
-  'Ciencias Naturales',
-  'Estudios Sociales',
-  'Ingles',
-  'Educacion Fisica',
-  'Artes',
-  'Informatica',
-];
-
-const PERIODO = '2026 Trimestre 1';
+const campos = [
+  ['1.ª Etapa', 'etapa1_puntos', 'etapa1_maximo'],
+  ['2.ª Etapa', 'etapa2_puntos', 'etapa2_maximo'],
+  ['Proceso acumulativo', 'proceso_puntos', 'proceso_maximo'],
+] as const;
 
 export default function CargaNotas() {
   const { usuario } = useAuth();
+  const [anio, setAnio] = useState(Number(fechaParaguay().slice(0, 4)));
   const [estudiantes, setEstudiantes] = useState<Estudiante[]>([]);
-  const [filteredEstudiantes, setFilteredEstudiantes] = useState<Estudiante[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedEstudiante, setSelectedEstudiante] = useState<Estudiante | null>(null);
-  const [selectedMateria, setSelectedMateria] = useState('');
-  const [existingCal, setExistingCal] = useState<Calificacion | null>(null);
-  const [parcial1, setParcial1] = useState('');
-  const [parcial2, setParcial2] = useState('');
-  const [parcial3, setParcial3] = useState('');
-  const [examenFinal, setExamenFinal] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [materias, setMaterias] = useState<Materia[]>([]);
+  const [estudiante, setEstudiante] = useState('');
+  const [materia, setMateria] = useState('');
+  const [busqueda, setBusqueda] = useState('');
+  const [politica, setPolitica] = useState<PoliticaAcademica>(propuestaPolitica(anio));
+  const [borrador, setBorrador] = useState<PoliticaAcademica>(propuestaPolitica(anio));
+  const [puntajes, setPuntajes] = useState<Puntajes>(puntajesVacios());
+  const [guardado, setGuardado] = useState<Calificacion | null>(null);
   const [loading, setLoading] = useState(true);
-
-  const promedioCalculado = (() => {
-    const p1 = parseFloat(parcial1) || 0;
-    const p2 = parseFloat(parcial2) || 0;
-    const p3 = parseFloat(parcial3) || 0;
-    const ef = parseFloat(examenFinal) || 0;
-    return ((p1 + p2 + p3 + ef) / 4).toFixed(2);
-  })();
-
-  const loadEstudiantes = useCallback(async () => {
-    setLoading(true);
-    const { data } = await supabase
-      .from('estudiantes')
-      .select('*')
-      .order('nombre_completo', { ascending: true });
-    const ests = (data || []) as Estudiante[];
-    setEstudiantes(ests);
-    setFilteredEstudiantes(ests);
-    setLoading(false);
-  }, []);
+  const [cargandoNota, setCargandoNota] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [mensaje, setMensaje] = useState('');
+  const [listo, setListo] = useState(false);
 
   useEffect(() => {
-    loadEstudiantes();
-  }, [loadEstudiantes]);
+    let vigente = true;
+    setLoading(true); setListo(false); setError(''); setGuardado(null);
+    Promise.all([
+      supabase.from('estudiantes').select('*').order('nombre_completo'),
+      supabase.from('materias').select('*').order('nombre'),
+      supabase.from('politicas_academicas').select('*').eq('anio', anio).maybeSingle(),
+    ]).then(([e, m, p]) => {
+      if (!vigente) return;
+      const fallo = e.error || m.error || p.error;
+      if (fallo) { setError(mensajeError(fallo)); return; }
+      setEstudiantes(e.data || []); setMaterias(m.data || []);
+      const regla = (p.data as PoliticaAcademica | null) || propuestaPolitica(anio);
+      setPolitica(regla); setBorrador(regla); setListo(true);
+    }).catch(e => { if (vigente) setError(mensajeError(e)); })
+      .finally(() => { if (vigente) setLoading(false); });
+    return () => { vigente = false; };
+  }, [anio]);
 
   useEffect(() => {
-    if (searchTerm.trim()) {
-      const filtered = estudiantes.filter(
-        (e) =>
-          e.nombre_completo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          e.ci.includes(searchTerm)
-      );
-      setFilteredEstudiantes(filtered);
-    } else {
-      setFilteredEstudiantes(estudiantes);
-    }
-  }, [searchTerm, estudiantes]);
+    let vigente = true;
+    setGuardado(null); setPuntajes(puntajesVacios()); setMensaje('');
+    if (!listo || !estudiante || !materia) { setCargandoNota(false); return; }
+    setCargandoNota(true); setError('');
+    Promise.resolve(supabase.from('calificaciones_etapas').select('*')
+      .eq('estudiante_id', estudiante).eq('materia_id', materia).eq('anio', anio).maybeSingle())
+      .then(({ data, error }) => {
+        if (!vigente) return;
+        if (error) { setError(mensajeError(error)); setListo(false); return; }
+        if (data) { setPuntajes(data); setGuardado(data); }
+      }).catch(e => { if (vigente) { setError(mensajeError(e)); setListo(false); } })
+      .finally(() => { if (vigente) setCargandoNota(false); });
+    return () => { vigente = false; };
+  }, [estudiante, materia, anio, listo]);
 
-  const loadExistingCalificacion = useCallback(
-    async (estudianteId: string, materia: string) => {
-      const { data } = await supabase
-        .from('calificaciones')
-        .select('*')
-        .eq('estudiante_id', estudianteId)
-        .eq('materia', materia)
-        .maybeSingle();
-
-      const cal = data as Calificacion | null;
-      setExistingCal(cal);
-      if (cal) {
-        setParcial1(String(cal.parcial1));
-        setParcial2(String(cal.parcial2));
-        setParcial3(String(cal.parcial3));
-        setExamenFinal(String(cal.examen_final));
-      } else {
-        setParcial1('');
-        setParcial2('');
-        setParcial3('');
-        setExamenFinal('');
-      }
-    },
-    []
-  );
-
-  const handleSelectEstudiante = (est: Estudiante) => {
-    setSelectedEstudiante(est);
-    setSearchTerm('');
-    setSuccessMsg(null);
-    setErrorMsg(null);
-    if (selectedMateria) {
-      loadExistingCalificacion(est.id, selectedMateria);
-    }
+  const confirmarPolitica = async () => {
+    if (!validarPolitica(borrador)) { setError('Los pesos positivos deben sumar 100; los límites deben ser crecientes entre 0 y 100.'); return; }
+    setSaving(true); setError(''); setMensaje('');
+    try {
+      const { data, error } = await supabase.from('politicas_academicas')
+        .upsert({ ...borrador, confirmada: true }, { onConflict: 'anio' }).select().single();
+      if (error) throw error;
+      setPolitica(data); setBorrador(data); setMensaje('Escala confirmada. Ya se pueden cargar puntajes.');
+    } catch (e) { setError(mensajeError(e)); } finally { setSaving(false); }
   };
 
-  const handleSelectMateria = (materia: string) => {
-    setSelectedMateria(materia);
-    setSuccessMsg(null);
-    setErrorMsg(null);
-    if (selectedEstudiante) {
-      loadExistingCalificacion(selectedEstudiante.id, materia);
+  const guardar = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!estudiante || !materia || !politica.confirmada || !validarPuntajes(puntajes)) {
+      setError('Revisá la selección, los puntajes y la escala académica.'); return;
     }
+    setSaving(true); setError(''); setMensaje('');
+    const { etapa1_puntos, etapa1_maximo, etapa2_puntos, etapa2_maximo, proceso_puntos, proceso_maximo } = puntajes;
+    try {
+      const { data, error } = await supabase.from('calificaciones_etapas').upsert({
+        estudiante_id: estudiante, materia_id: materia, anio, etapa1_puntos, etapa1_maximo,
+        etapa2_puntos, etapa2_maximo, proceso_puntos, proceso_maximo,
+      }, { onConflict: 'estudiante_id,materia_id,anio' }).select().single();
+      if (error) throw error;
+      setGuardado(data); setPuntajes(data); setMensaje('Puntajes guardados. Resultado calculado por la base de datos.');
+    } catch (e) { setError(mensajeError(e)); } finally { setSaving(false); }
   };
-
-  const validateGrade = (value: string): boolean => {
-    if (value === '') return true;
-    const num = parseFloat(value);
-    return !isNaN(num) && num >= 0 && num <= 5;
-  };
-
-  const handleSave = async () => {
-    if (!selectedEstudiante || !selectedMateria) {
-      setErrorMsg('Seleccione un estudiante y una materia');
-      return;
-    }
-
-    if (!validateGrade(parcial1) || !validateGrade(parcial2) || !validateGrade(parcial3) || !validateGrade(examenFinal)) {
-      setErrorMsg('Las notas deben estar entre 0 y 5');
-      return;
-    }
-
-    if (!parcial1 || !parcial2 || !parcial3 || !examenFinal) {
-      setErrorMsg('Complete todos los campos de calificacion');
-      return;
-    }
-
-    setSaving(true);
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    const p1 = parseFloat(parcial1);
-    const p2 = parseFloat(parcial2);
-    const p3 = parseFloat(parcial3);
-    const ef = parseFloat(examenFinal);
-    const promedio = (p1 + p2 + p3 + ef) / 4;
-
-    if (existingCal) {
-      const { error } = await supabase
-        .from('calificaciones')
-        .update({
-          parcial1: p1,
-          parcial2: p2,
-          parcial3: p3,
-          examen_final: ef,
-          promedio,
-        })
-        .eq('id', existingCal.id);
-
-      if (error) {
-        setErrorMsg('Error al actualizar la calificacion');
-      } else {
-        setSuccessMsg('Calificacion actualizada correctamente');
-        setExistingCal({ ...existingCal, parcial1: p1, parcial2: p2, parcial3: p3, examen_final: ef, promedio });
-      }
-    } else {
-      const { data, error } = await supabase
-        .from('calificaciones')
-        .insert({
-          estudiante_id: selectedEstudiante.id,
-          materia: selectedMateria,
-          parcial1: p1,
-          parcial2: p2,
-          parcial3: p3,
-          examen_final: ef,
-          promedio,
-          periodo: PERIODO,
-        })
-        .select()
-        .maybeSingle();
-
-      if (error) {
-        setErrorMsg('Error al guardar la calificacion');
-      } else {
-        setSuccessMsg('Calificacion registrada correctamente');
-        setExistingCal(data as Calificacion);
-      }
-    }
-    setSaving(false);
-  };
-
-  const handleClearSelection = () => {
-    setSelectedEstudiante(null);
-    setSelectedMateria('');
-    setExistingCal(null);
-    setParcial1('');
-    setParcial2('');
-    setParcial3('');
-    setExamenFinal('');
-    setSuccessMsg(null);
-    setErrorMsg(null);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-center">
-          <div className="w-12 h-12 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-400">Cargando estudiantes...</p>
+  const resultado = validarPuntajes(puntajes) && validarPolitica(politica)
+    ? calcularResultado(puntajes, politica) : { promedio: null, nota_final: null };
+  return <div className="max-w-6xl mx-auto space-y-6">
+    <header className="rounded-2xl bg-navy-900 p-6 text-white"><p className="text-brand-300 text-sm">Gestión académica</p>
+      <h2 className="text-2xl font-bold">Planilla de calificaciones</h2><p className="mt-2 text-sm">Dos etapas · Proceso acumulativo · Nota final del 1 al 5</p></header>
+    <label className="block font-semibold">Año lectivo<input aria-label="Año lectivo" type="number" min="2020" max="2100" value={anio} disabled={saving}
+      onChange={e => { const n = Number(e.target.value); if (n >= 2020 && n <= 2100) setAnio(n); }} className="input mt-2 max-w-40" /></label>
+    {error && <p role="alert" className="notice-error">{error}</p>}
+    {mensaje && <p role="status" className="notice-success">{mensaje}</p>}
+    {loading ? <p role="status">Cargando planilla…</p> : listo && <>
+      <section className="panel">
+        <h3 className="font-bold text-lg">Escala del colegio {politica.confirmada ? '· Confirmada' : '· Pendiente de confirmación'}</h3>
+        <p className="text-sm text-gray-500 mt-2">Promedio porcentual = porcentaje obtenido en cada etapa y proceso, multiplicado por su peso. Se redondea a dos decimales antes de aplicar la escala.</p>
+        {!politica.confirmada && <p className="mt-2 text-amber-800 text-sm">Los valores propuestos son editables. El directivo debe ajustarlos al reglamento del colegio y confirmarlos.</p>}
+        {usuario?.rol === 'DIRECTIVO' && !politica.confirmada ? <>
+          <div className="grid sm:grid-cols-3 gap-3 my-4">
+            {([['peso_etapa1', 'Peso 1.ª Etapa (%)'], ['peso_etapa2', 'Peso 2.ª Etapa (%)'], ['peso_proceso', 'Peso proceso (%)'],
+              ['minimo2', 'Mínimo para 2 (%)'], ['minimo3', 'Mínimo para 3 (%)'], ['minimo4', 'Mínimo para 4 (%)'], ['minimo5', 'Mínimo para 5 (%)']] as const).map(([key, label]) =>
+              <label key={key} className="text-sm">{label}<input className="input mt-1" type="number" min="0.01" max="100" step="0.01"
+                value={borrador[key]} disabled={saving} onChange={e => setBorrador({ ...borrador, [key]: Number(e.target.value) })} /></label>)}
+          </div><button className="btn" disabled={saving} onClick={confirmarPolitica}>Confirmar escala del colegio</button>
+        </> : <p className="mt-3 text-sm">Pesos: {politica.peso_etapa1}% / {politica.peso_etapa2}% / {politica.peso_proceso}%.
+          Notas: 1 por debajo de {politica.minimo2}%; 2 desde {politica.minimo2}%; 3 desde {politica.minimo3}%; 4 desde {politica.minimo4}%; 5 desde {politica.minimo5}%.</p>}
+      </section>
+      <form onSubmit={guardar} className="panel space-y-5">
+        <fieldset disabled={saving || cargandoNota} className="grid md:grid-cols-2 gap-4">
+          <div><label className="block text-sm">Buscar estudiante<input className="input mt-1" value={busqueda} onChange={e => setBusqueda(e.target.value)} placeholder="Nombre o C.I." /></label>
+            <label className="block text-sm mt-3">Estudiante<select className="input mt-1" required value={estudiante} onChange={e => setEstudiante(e.target.value)}>
+              <option value="">Seleccionar estudiante</option>{estudiantes.filter(e => e.id === estudiante || (e.nombre_completo + e.ci).toLowerCase().includes(busqueda.toLowerCase())).map(e => <option key={e.id} value={e.id}>{e.nombre_completo} · {e.curso}</option>)}
+            </select></label></div>
+          <label className="text-sm">Materia<select className="input mt-1" required value={materia} onChange={e => setMateria(e.target.value)}>
+            <option value="">Seleccionar materia</option>{materias.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+          </select></label>
+        </fieldset>
+        {cargandoNota && <p role="status">Cargando puntajes…</p>}
+        <fieldset disabled={!politica.confirmada || !estudiante || !materia || saving || cargandoNota} className="grid md:grid-cols-3 gap-4">
+          {campos.map(([label, puntos, maximo]) => <div key={puntos} className="rounded-xl bg-gray-50 p-4">
+            <h3 className="font-bold mb-3">{label}</h3>
+            <label className="text-sm block">Puntaje obtenido<input className="input mt-1" type="number" step="0.01" min="0" max={puntajes[maximo]} value={puntajes[puntos] ?? ''}
+              onChange={e => { setGuardado(null); setPuntajes({ ...puntajes, [puntos]: e.target.value === '' ? null : Number(e.target.value) }); }} placeholder="Pendiente" /></label>
+            <label className="text-sm block mt-3">Puntaje máximo<input className="input mt-1" type="number" step="0.01" min="0.01" max="100000" required value={puntajes[maximo]}
+              onChange={e => { setGuardado(null); setPuntajes({ ...puntajes, [maximo]: Number(e.target.value) }); }} /></label>
+          </div>)}
+        </fieldset>
+        <div className="rounded-xl bg-navy-900 text-white p-5 flex flex-wrap gap-8">
+          <div><p className="text-sm text-brand-300">Promedio porcentual</p><p className="text-3xl font-bold">{resultado.promedio === null ? 'Pendiente' : resultado.promedio.toFixed(2) + '%'}</p></div>
+          <div><p className="text-sm text-brand-300">Nota final</p><p className="text-3xl font-bold">{resultado.nota_final ?? '—'} <small className="text-base">/ 5</small></p></div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-w-5xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-navy-900 to-navy-800 rounded-2xl p-6 text-white shadow-lg">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 bg-brand-600 rounded-xl flex items-center justify-center">
-            <BookOpen className="w-6 h-6 text-white" />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold">Carga de Calificaciones</h2>
-            <p className="text-brand-300 text-sm">
-              Seleccione el estudiante y la materia para registrar o editar notas
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Student list */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5">
-          <h3 className="font-bold text-navy-900 mb-4">Estudiantes</h3>
-
-          {/* Search */}
-          <div className="relative mb-4">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Buscar por nombre o C.I."
-              className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm text-navy-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
-            />
-          </div>
-
-          {/* List */}
-          <div className="space-y-1 max-h-[400px] overflow-y-auto">
-            {filteredEstudiantes.length === 0 ? (
-              <p className="text-center text-gray-400 text-sm py-8">Sin resultados</p>
-            ) : (
-              filteredEstudiantes.map((est) => (
-                <button
-                  key={est.id}
-                  onClick={() => handleSelectEstudiante(est)}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all text-left ${
-                    selectedEstudiante?.id === est.id
-                      ? 'bg-brand-50 border border-brand-200'
-                      : 'hover:bg-gray-50'
-                  }`}
-                >
-                  {est.foto_url ? (
-                    <img
-                      src={est.foto_url}
-                      alt={est.nombre_completo}
-                      className="w-9 h-9 rounded-lg object-cover flex-shrink-0"
-                    />
-                  ) : (
-                    <div className="w-9 h-9 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0">
-                      <GraduationCap className="w-5 h-5 text-brand-600" />
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-navy-900 truncate">
-                      {est.nombre_completo}
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {est.ci} · {est.curso}
-                    </p>
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Grade form */}
-        <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
-          {!selectedEstudiante ? (
-            <div className="text-center py-16">
-              <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                <BookOpen className="w-8 h-8 text-gray-300" />
-              </div>
-              <p className="text-gray-400">
-                Seleccione un estudiante de la lista para comenzar
-              </p>
-            </div>
-          ) : (
-            <>
-              {/* Selected student header */}
-              <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-100">
-                <div className="flex items-center gap-3">
-                  {selectedEstudiante.foto_url ? (
-                    <img
-                      src={selectedEstudiante.foto_url}
-                      alt={selectedEstudiante.nombre_completo}
-                      className="w-12 h-12 rounded-xl object-cover"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-xl bg-brand-100 flex items-center justify-center">
-                      <GraduationCap className="w-6 h-6 text-brand-600" />
-                    </div>
-                  )}
-                  <div>
-                    <p className="font-bold text-navy-900">{selectedEstudiante.nombre_completo}</p>
-                    <p className="text-sm text-gray-400">
-                      C.I. {selectedEstudiante.ci} · {selectedEstudiante.curso}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={handleClearSelection}
-                  className="p-2 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Materia selector */}
-              <div className="mb-6">
-                <label className="block text-sm font-semibold text-navy-800 mb-2">
-                  Materia
-                </label>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {MATERIAS.map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => handleSelectMateria(m)}
-                      className={`px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                        selectedMateria === m
-                          ? 'bg-brand-600 text-white shadow-lg shadow-brand-600/20'
-                          : 'bg-gray-50 text-navy-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Grade inputs */}
-              {selectedMateria && (
-                <div className="animate-slide-up">
-                  <div className="flex items-center gap-2 mb-4">
-                    {existingCal ? (
-                      <span className="flex items-center gap-1.5 text-sm text-brand-600 font-medium">
-                        <Edit3 className="w-4 h-4" />
-                        Editando calificacion existente
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1.5 text-sm text-success-600 font-medium">
-                        <Plus className="w-4 h-4" />
-                        Nueva calificacion
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                    {[
-                      { label: 'Parcial 1', value: parcial1, setter: setParcial1 },
-                      { label: 'Parcial 2', value: parcial2, setter: setParcial2 },
-                      { label: 'Parcial 3', value: parcial3, setter: setParcial3 },
-                      { label: 'Examen Final', value: examenFinal, setter: setExamenFinal },
-                    ].map((field) => (
-                      <div key={field.label}>
-                        <label className="block text-xs font-semibold text-gray-500 mb-1.5">
-                          {field.label}
-                        </label>
-                        <input
-                          type="number"
-                          min="0"
-                          max="5"
-                          step="0.1"
-                          value={field.value}
-                          onChange={(e) => field.setter(e.target.value)}
-                          placeholder="0.0"
-                          className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-navy-900 text-center text-lg font-bold focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Promedio display */}
-                  <div className="flex items-center justify-between p-5 bg-navy-900 rounded-2xl mb-6">
-                    <div>
-                      <p className="text-xs text-brand-300 uppercase tracking-wide font-semibold">
-                        Promedio Calculado
-                      </p>
-                      <p className="text-3xl font-bold text-white mt-1">
-                        {promedioCalculado}
-                      </p>
-                    </div>
-                    <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center">
-                      <span className="text-2xl font-bold text-brand-300">/5</span>
-                    </div>
-                  </div>
-
-                  {/* Messages */}
-                  {successMsg && (
-                    <div className="flex items-center gap-3 p-4 bg-success-50 border border-success-100 rounded-xl mb-4 animate-slide-down">
-                      <CheckCircle2 className="w-5 h-5 text-success-600 flex-shrink-0" />
-                      <p className="text-success-700 text-sm font-medium">{successMsg}</p>
-                    </div>
-                  )}
-                  {errorMsg && (
-                    <div className="flex items-center gap-3 p-4 bg-error-50 border border-error-100 rounded-xl mb-4 animate-slide-down">
-                      <AlertCircle className="w-5 h-5 text-error-600 flex-shrink-0" />
-                      <p className="text-error-700 text-sm font-medium">{errorMsg}</p>
-                    </div>
-                  )}
-
-                  {/* Save button */}
-                  <button
-                    onClick={handleSave}
-                    disabled={saving}
-                    className="w-full py-3.5 bg-brand-600 hover:bg-brand-700 text-white font-semibold rounded-xl transition-all shadow-lg shadow-brand-600/20 disabled:opacity-60 flex items-center justify-center gap-2"
-                  >
-                    {saving ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        Guardando...
-                      </>
-                    ) : (
-                      <>
-                        <Save className="w-5 h-5" />
-                        {existingCal ? 'Actualizar Calificacion' : 'Guardar Calificacion'}
-                      </>
-                    )}
-                  </button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+        <p className="text-sm text-gray-500">{guardado ? 'Resultado guardado en Supabase.' : 'Vista de cálculo antes de guardar.'} Dejá en blanco los puntajes pendientes; cero significa una evaluación realizada sin puntos.</p>
+        <button className="btn" disabled={saving || cargandoNota || !politica.confirmada || !estudiante || !materia}>{saving ? 'Guardando…' : 'Guardar puntajes'}</button>
+      </form>
+    </>}
+  </div>;
 }

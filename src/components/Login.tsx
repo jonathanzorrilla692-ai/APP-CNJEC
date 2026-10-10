@@ -149,7 +149,7 @@ export default function Login() {
           </form>
 
           {/* Demo credentials */}
-          <div className="mt-8 p-5 bg-white border border-gray-200 rounded-xl">
+          {import.meta.env.DEV && import.meta.env.VITE_DEMO_LOGIN === 'true' && <div className="mt-8 p-5 bg-white border border-gray-200 rounded-xl">
             <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
               Credenciales de Demostración
             </p>
@@ -197,7 +197,7 @@ export default function Login() {
                 </div>
               </button>
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     </div>
