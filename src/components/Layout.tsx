@@ -24,7 +24,7 @@ export default function Layout({ children, currentView, onNavigate, navItems }: 
       ? 'Tutor / Padre'
       : usuario?.rol === 'DOCENTE'
       ? 'Docente'
-      : 'Directivo';
+      : usuario?.rol === 'ESTUDIANTE' ? 'Estudiante' : usuario?.rol === 'PRECEPTOR' ? 'Preceptor' : 'Directivo';
 
   const roleColor =
     usuario?.rol === 'TUTOR'
@@ -54,6 +54,7 @@ export default function Layout({ children, currentView, onNavigate, navItems }: 
               <p className="text-brand-300 text-xs truncate">Juan Eudoro Cáceres</p>
             </div>
             <button
+              aria-label="Cerrar menú"
               onClick={() => setSidebarOpen(false)}
               className="lg:hidden ml-auto text-white/60 hover:text-white"
             >
@@ -127,6 +128,8 @@ export default function Layout({ children, currentView, onNavigate, navItems }: 
         <header className="glass sticky top-0 z-20 border-b border-gray-200 px-4 lg:px-8 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button
+              aria-label="Abrir menú"
+              aria-expanded={sidebarOpen}
               onClick={() => setSidebarOpen(true)}
               className="lg:hidden p-2 rounded-lg hover:bg-gray-100"
             >
@@ -148,6 +151,7 @@ export default function Layout({ children, currentView, onNavigate, navItems }: 
           </div>
           <button
             onClick={() => onNavigate('comunicados')}
+            aria-label="Ver comunicados"
             className="relative p-2.5 rounded-xl bg-white border border-gray-200 hover:border-brand-300 hover:bg-brand-50 transition-all"
           >
             <Bell className="w-5 h-5 text-navy-700" />

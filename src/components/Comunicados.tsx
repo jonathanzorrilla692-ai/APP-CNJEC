@@ -9,6 +9,10 @@ import {
   X,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/context/AuthContext';
+import { useActualizacion } from '@/hooks/useActualizacion';
+import { mensajeError } from '@/lib/errores';
+import PublicarComunicado from './PublicarComunicado';
 import type { Comunicado, EtiquetaComunicado } from '@/types';
 
 const ETIQUETA_CONFIG: Record<
@@ -48,24 +52,28 @@ const ETIQUETA_CONFIG: Record<
 type Filtro = 'TODOS' | EtiquetaComunicado;
 
 export default function Comunicados() {
+  const { usuario } = useAuth();
+  const [error, setError] = useState('');
   const [comunicados, setComunicados] = useState<Comunicado[]>([]);
   const [loading, setLoading] = useState(true);
   const [filtro, setFiltro] = useState<Filtro>('TODOS');
   const [selected, setSelected] = useState<Comunicado | null>(null);
 
   const loadComunicados = useCallback(async () => {
-    setLoading(true);
-    const { data } = await supabase
+    try {
+    const { data, error } = await supabase
       .from('comunicados')
       .select('*')
       .order('fecha', { ascending: false });
-    setComunicados((data || []) as Comunicado[]);
-    setLoading(false);
+    if (error) throw error;
+    setComunicados((data || []) as Comunicado[]); setError('');
+    } catch (e) { setError(mensajeError(e)); } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
     loadComunicados();
   }, [loadComunicados]);
+  useActualizacion('comunicados', loadComunicados);
 
   const filtered =
     filtro === 'TODOS'
@@ -100,6 +108,8 @@ export default function Comunicados() {
         </div>
       </div>
 
+      {error && <p role="alert" className="notice-error">{error}</p>}
+      {(usuario?.rol === 'DOCENTE' || usuario?.rol === 'DIRECTIVO') && <PublicarComunicado onPublicado={loadComunicados} />}
       {/* Filter tabs */}
       <div className="flex gap-2 overflow-x-auto pb-1">
         {filtros.map((f) => {
@@ -139,7 +149,7 @@ export default function Comunicados() {
       )}
 
       {/* Empty state */}
-      {!loading && filtered.length === 0 && (
+      {!loading && !error && filtered.length === 0 && (
         <div className="text-center py-20">
           <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <Megaphone className="w-8 h-8 text-gray-300" />
