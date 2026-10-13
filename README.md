@@ -12,10 +12,21 @@ Requiere Node.js 20 o posterior.
 
 ## Activar la base de datos
 
-En un proyecto nuevo, aplicar en orden las cuatro migraciones de `supabase/migrations/`.
+En un proyecto nuevo, aplicar únicamente esta secuencia de archivos de supabase/migrations/:
+1. 20261003135219_create_school_platform_schema.sql
+2. 20261003145959_add_estudiante_role.sql
+3. 20261006180000_etapas_carnets_asistencia.sql
+4. 20261010120000_gestion_escolar.sql
+5. 20261013013539_educacion_media_dos_etapas.sql
+
+El repositorio también contiene dos copias importadas por Bolt con prefijo 202610101756.
+No ejecutarlas junto con sus equivalentes originales: vuelven a crear los mismos objetos.
+Si esas copias ya fueron aplicadas en Bolt, ejecutar solo la nueva migración de Educación Media.
+No usar db push indiscriminadamente hasta conciliar ese historial duplicado con la base real.
 En la base existente que ya tiene las dos migraciones originales, ejecutar únicamente
 `supabase/migrations/20261006180000_etapas_carnets_asistencia.sql` y después
-`supabase/migrations/20261010120000_gestion_escolar.sql` desde Supabase SQL Editor con la cuenta administradora, o mediante Supabase CLI con acceso al proyecto.
+`supabase/migrations/20261010120000_gestion_escolar.sql`, seguidas de
+`supabase/migrations/20261013013539_educacion_media_dos_etapas.sql` desde Supabase SQL Editor con la cuenta administradora, o mediante Supabase CLI con acceso al proyecto.
 
 La clave anon no autoriza a ejecutar migraciones. La aplicación muestra un aviso cuando faltan tablas.
 La migración se ejecuta en una transacción. No ejecutar repetidamente una migración ya aplicada.
@@ -43,25 +54,47 @@ El directivo puede completar fichas, especialidades, vínculos y catálogo de ma
 - El carnet se descarga en PNG con datos y QR. La fotografía remota se muestra en pantalla y no se incluye en la imagen descargada.
 - Las credenciales de demostración solo se muestran en desarrollo con `VITE_DEMO_LOGIN=true`; no se habilitan en producción.
 
-## Política de evaluación
+## Evaluación de Educación Media
 
-El pedido no especifica porcentajes, cortes ni regla institucional de redondeo.
-Por eso **no se afirma que la propuesta sea una normativa oficial del MEC**.
+La pantalla activa corresponde al período ordinario de disciplinas evaluadas en dos etapas.
+Admite carga directa de notas 1–5 o indicadores enteros, independientemente para cada etapa.
+El proceso acumulativo se registra como observaciones de cada etapa, sin un tercer peso anual.
 
-En “Carga de notas”, el directivo selecciona el año, ajusta pesos y límites y confirma la escala.
-La propuesta inicial (sin confirmar) es 40% primera etapa, 40% segunda etapa y 20% proceso;
-cortes 60/70/80/90 para las notas 2/3/4/5. No se puede guardar ninguna calificación hasta confirmar.
+- Promedio matemático = (nota de etapa 1 + nota de etapa 2) / 2.
+- Aprueba la disciplina cuando la suma es al menos 4 y la segunda etapa es al menos 2.
+- Primero se verifica la aprobación; luego se redondean mitades hacia arriba. Si no aprueba, final 1.
+- 1 + 2: promedio 1,5, final 1, recuperación. 3 + 1: promedio 2, final 1, recuperación.
+- Blanco: pendiente, final NULL. Cero indicadores logrados: nota de etapa 1.
+- Puntajes: mínimo de 2 = techo(total × 70%). No se redondea hacia abajo la exigencia.
+- Ejemplo inicial verificado sobre 60 indicadores: mínimos 42/47/52/57 para 2/3/4/5.
+- Los cortes 3/4/5 son explícitos y deben corresponder a la planilla del colegio. Al cambiar el total se limpian para evitar aplicar cortes de otra escala. No se inventa una regla universal de intervalos para otros totales.
+- No admite puntajes fraccionarios en el modo indicadores; para otra rúbrica se carga la nota de etapa ya obtenida.
 
-Cada componente tiene puntaje obtenido y máximo. El promedio porcentual es:
-`etapa1 / máximo1 × peso1 + etapa2 / máximo2 × peso2 + proceso / máximoProceso × pesoProceso`.
-Se redondea a dos decimales (mitades hacia arriba) antes de comparar con los cortes.
-La nota es 1 por debajo del mínimo de 2; 2, 3, 4 o 5 según el límite alcanzado.
+La nueva tabla calificaciones_media recalcula notas, promedio y estado mediante un trigger invocador.
+Las tablas calificaciones_etapas y politicas_academicas permanecen como historial de solo lectura.
+No se transforman automáticamente los puntajes o resultados antiguos: el docente debe revisarlos.
+El historial se muestra separado en carga de notas y panel de familias y no integra el promedio nuevo.
+El cálculo legado en src/lib/academico.ts se conserva únicamente para verificar las migraciones históricas; ninguna pantalla activa lo utiliza.
 
-Blanco = pendiente. Cero = puntaje real evaluado. Mientras falte un componente, promedio y final son NULL.
-Supabase recalcula ambos campos en cada escritura, incluso si un cliente intenta enviar otra nota.
-Decimal.js mantiene el cálculo de vista previa consistente con los decimales de PostgreSQL.
-Una escala confirmada queda fija para el año; una corrección excepcional exige intervención administrativa y recálculo controlado.
-No se calcula una nota oficial hasta que el colegio confirme su reglamento.
+La condición mostrada es por disciplina en ordinario. No equivale a promoción del curso completo.
+Los proyectos educativos, planes modulares y resultados del período complementario o regularización
+requieren sus propias planillas; esta entrega los identifica como fuera del cálculo de dos etapas.
+No se afirma compatibilidad con todos los planes del tercer curso técnico.
+
+Referencias revisadas (copias de documentos MEC; continuidad localizada hasta Circular 14/2024):
+- [Resolución 101/2014, Científico](https://es.scribd.com/doc/260966997/Criterios-de-Promocion-de-Educacion-Media-2014).
+- [Resolución 257/2023, mínimo 70% en Media](https://es.scribd.com/document/647697415/2023-05-17-257-RESOLUCION-MODIFICACION-PARCIAL-EVALUACION-NM-3er-EEB).
+- [Valoración MEC 2009, anexos pp. 102–103: ejemplos de redondeo](https://es.scribd.com/document/436203285/Sistema-de-Promocion-en-La-Media-2009-Version-Final).
+- [Orientaciones mayo 2023: escala sobre 60 indicadores](https://es.scribd.com/presentation/649453002/Orientaciones-Evaluacion-23-1-1).
+
+### Activación de esta entrega
+
+Aplicar la quinta migración en la base del colegio antes de desplegar el frontend nuevo.
+Con las cuatro primeras ya aplicadas, ejecutar solo 20261013013539_educacion_media_dos_etapas.sql.
+Es una transacción y conserva los registros anteriores. No se debe volver a ejecutar después del éxito.
+La conexión administradora disponible no incluye el proyecto apsvydogpiupkkhzuofo;
+esta entrega está comprobada localmente con PGlite, no aplicada a la base remota.
+No requiere un plan de pago para estas funciones de PostgreSQL.
 
 ## Carnets y asistencia
 
@@ -86,7 +119,7 @@ No se calcula una nota oficial hasta que el colegio confirme su reglamento.
 | Tutor | Estudiantes vinculados | Estudiantes vinculados | Estudiantes vinculados |
 | Preceptor | Todos | Sin acceso | Registrar/corregir hoy |
 | Docente | Todos | Leer/cargar | Registrar/corregir hoy |
-| Directivo | Todos | Confirmar escala y cargar | Registrar/corregir hoy |
+| Directivo | Todos | Cargar y consultar | Registrar/corregir hoy |
 
 ## Verificación
 
@@ -97,7 +130,7 @@ No se calcula una nota oficial hasta que el colegio confirme su reglamento.
 
 Las pruebas ejecutan las migraciones en PostgreSQL local con PGlite (Auth simulado), verifican RLS para los cinco roles,
 límites de notas, puntajes pendientes, entradas inválidas, promedios manipulados, duplicados, fecha de Paraguay,
-gestión de alumnos y materias, autoría de comunicados y exportación CSV. Actualmente hay siete pruebas.
+gestión de alumnos y materias, autoría de comunicados y exportación CSV. Actualmente hay nueve pruebas, incluidas las 25 combinaciones de Media, cortes de puntaje, entradas manipuladas y conservación del historial.
 No escriben datos de prueba en el colegio. PGlite no reemplaza la prueba de transporte Realtime de Supabase.
 La prueba de cámara física y la integración de escrituras remotas se completan después de aplicar la migración.
 

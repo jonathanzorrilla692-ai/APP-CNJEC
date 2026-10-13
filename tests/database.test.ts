@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { calcularResultado, propuestaPolitica, puntajesVacios } from '../src/lib/academico';
+import { etapaVacia, resultadoMedia } from '../src/lib/media';
+import type { Nota } from '../src/types';
 
 test('migraciones, cálculos autoritativos, RLS y asistencia idempotente', async () => {
  const db = new PGlite();
@@ -115,5 +117,46 @@ test('migraciones, cálculos autoritativos, RLS y asistencia idempotente', async
     await assert.rejects(() => db.exec("SELECT publicar_comunicado('Aviso','Contenido','GENERAL')"));
     assert.ok((await db.query('SELECT * FROM comunicados')).rows.length >= 2);
   }
+  // Media: conservar historia y calcular en servidor, incluso ante resultados manipulados.
+  await db.exec('RESET ROLE');
+  const historia = (await db.query('SELECT * FROM calificaciones_etapas ORDER BY id')).rows;
+  await db.exec(await readFile(new URL('../supabase/migrations/20261013013539_educacion_media_dos_etapas.sql', import.meta.url), 'utf8'));
+  assert.deepEqual((await db.query('SELECT * FROM calificaciones_etapas ORDER BY id')).rows, historia);
+  await asUser(docente);
+  await assert.rejects(() => db.exec('UPDATE calificaciones_etapas SET nota_final=5'));
+  const etapa = { ...etapaVacia(), nota: 1 };
+  const nueva = (await db.query<{id:string}>(`INSERT INTO calificaciones_media(estudiante_id,materia_id,anio,etapa1,etapa2,nota_final,estado)
+    VALUES ($1,$2,2026,$3,$3,5,'APROBADO') RETURNING id`, [estudiante,materia,JSON.stringify(etapa)])).rows[0];
+  for (let a=1; a<=5; a++) for (let b=1; b<=5; b++) {
+    const entrada = { etapa1:{...etapaVacia(),nota:a as Nota}, etapa2:{...etapaVacia(),nota:b as Nota} };
+    const actual = (await db.query<{nota_final:number;promedio:string;estado:string}>(`UPDATE calificaciones_media
+      SET etapa1=$1,etapa2=$2,nota_final=5,promedio=5,estado='APROBADO' WHERE id=$3 RETURNING *`,
+      [JSON.stringify(entrada.etapa1),JSON.stringify(entrada.etapa2),nueva.id])).rows[0];
+    const expected = resultadoMedia(entrada);
+    assert.equal(actual.nota_final,expected.nota_final); assert.equal(Number(actual.promedio),expected.promedio); assert.equal(actual.estado,expected.estado);
+  }
+  for (const puntos of [0,41,42,46,47,51,52,56,57,60,null]) {
+    const e = {...etapaVacia(),modo:'PUNTAJE' as const,puntos};
+    const actual = (await db.query<{nota_etapa1:number|null;nota_final:number|null;estado:string}>(
+      'UPDATE calificaciones_media SET etapa1=$1,etapa2=$1 WHERE id=$2 RETURNING *',[JSON.stringify(e),nueva.id])).rows[0];
+    const expected = resultadoMedia({etapa1:e,etapa2:e});
+    assert.equal(actual.nota_etapa1,expected.nota_etapa1); assert.equal(actual.nota_final,expected.nota_final); assert.equal(actual.estado,expected.estado);
+  }
+  for (const e of [{...etapa,nota:2.5},{...etapa,nota:0},{...etapa,nota:'5'},{...etapa,modo:'OTRO'},
+    {...etapaVacia(),modo:'PUNTAJE',puntos:-1},{...etapaVacia(),modo:'PUNTAJE',puntos:61},
+    {...etapaVacia(),modo:'PUNTAJE',puntos:42.5},{...etapaVacia(),modo:'PUNTAJE',minimo3:null},
+    {...etapaVacia(),modo:'PUNTAJE',minimo3:42},{...etapa,proceso:'x'.repeat(2001)}])
+    await assert.rejects(() => db.query('UPDATE calificaciones_media SET etapa1=$1 WHERE id=$2',[JSON.stringify(e),nueva.id]));
+  for (const id of [tutor,alumno,ajeno,preceptor]) {
+    await asUser(id);
+    assert.equal((await db.query('SELECT * FROM calificaciones_media')).rows.length,[tutor,alumno].includes(id)?1:0);
+    assert.equal((await db.query('UPDATE calificaciones_media SET nota_final=5 RETURNING *')).rows.length,0);
+    await assert.rejects(() => db.query(`INSERT INTO calificaciones_media(estudiante_id,materia_id,anio,etapa1,etapa2)
+      VALUES ($1,$2,2027,$3,$3)`,[estudiante,materia,JSON.stringify(etapa)]));
+  }
+  await asUser(directivo);
+  assert.equal((await db.query('UPDATE calificaciones_media SET etapa1=$1 WHERE id=$2 RETURNING *',[JSON.stringify(etapa),nueva.id])).rows.length,1);
+  await db.exec('RESET ROLE; SET ROLE anon');
+  await assert.rejects(() => db.query('SELECT * FROM calificaciones_media'));
  } finally { await db.close(); }
 });
